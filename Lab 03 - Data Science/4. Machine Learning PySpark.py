@@ -30,18 +30,23 @@ display(data)
 
 # COMMAND ----------
 
-# DBTITLE 1,First: split our raw data into training, validation (for tuning), and test (for reporting purposes only)
+# MAGIC %md
+# MAGIC # Train test Split
+
+# COMMAND ----------
+
 from sklearn.model_selection import train_test_split
 
 train_portion = 0.7
 valid_portion = 0.2
 test_portion = 0.1
 
-train_df, test_df = train_test_split(data.toPandas(), test_size=test_portion)
-train_df, valid_df = train_test_split(train_df, test_size= 1 - train_portion/(train_portion+valid_portion))
+train_data, test_data, valid_data = data.randomSplit([train_portion, valid_portion, test_portion], seed=42)
 
-# Just to make sure the maths worked out ;)
-assert round((train_df.shape[0] / (train_df.shape[0] + valid_df.shape[0] + test_df.shape[0])), 2) == train_portion
+# COMMAND ----------
+
+# check the math worked
+data.count() - (train_data.count() + test_data.count() + valid_data.count())
 
 # COMMAND ----------
 
@@ -66,27 +71,31 @@ feature_lookup = FeatureLookup(
 
 # DBTITLE 1,We generate a training and validation data set using our feature lookups
 training_set = fs.create_training_set(
-  df=spark.createDataFrame(train_df),
+  df=train_data,
   feature_lookups=[feature_lookup],
   label = 'quality',
   exclude_columns="customer_id"
 )
 
 validation_set = fs.create_training_set(
-  df=spark.createDataFrame(valid_df),
+  df=valid_data,
   feature_lookups=[feature_lookup],
   label = 'quality',
   exclude_columns="customer_id"
 )
 
-training_data = training_set.load_df().toPandas()
-validation_data = validation_set.load_df().toPandas()
+training_data = training_set.load_df()
+validation_data = validation_set.load_df()
+
+# COMMAND ----------
+
+display(training_data)
 
 # COMMAND ----------
 
 # MAGIC %md-sandbox
 # MAGIC 
-# MAGIC ## Machine Learning Pipeline
+# MAGIC # Machine Learning Pipeline
 # MAGIC We will apply different transformations for numerical and categorical columns. 
 # MAGIC 
 # MAGIC 
@@ -105,24 +114,47 @@ validation_data = validation_set.load_df().toPandas()
 
 # COMMAND ----------
 
-# DBTITLE 1,Tiny bit of cleanup before we define our pipeline 🧹 
-# Gather and exogenous and endogenous variables from training and validation
-X_training = training_data.drop(columns=['quality'], axis=1)
-y_training = (training_data['quality'] == "Good").astype(int)
+# MAGIC %md
+# MAGIC ## Initial Preprocessing
+# MAGIC 
+# MAGIC This includes processing which will not need to be performed on new data.
+# MAGIC 
+# MAGIC All processing which must be performed on new data, should be in the pipeline.
 
-X_validation = validation_data.drop(columns=['quality'], axis=1)
-y_validation = (validation_data['quality'] == "Good").astype(int)
+# COMMAND ----------
 
-# Gather the numerical and categorical features
-numerical_features = X_training._get_numeric_data().columns.tolist()
+import pyspark.sql.functions as F
+
+# COMMAND ----------
+
+# DBTITLE 1,Reformat target variable
+X_training = training_data.drop(F.col('quality'))
+y_training = training_data.select(F.col('quality') == "Good").withColumnRenamed("(quality = Good)", "quality").select(F.col('quality').cast('int'))
+
+X_validation = validation_data.drop(F.col('quality'))
+y_validation = validation_data.select(F.col('quality') == "Good").withColumnRenamed("(quality = Good)", "quality").select(F.col('quality').cast('int'))
+
+# COMMAND ----------
+
+# DBTITLE 1,Gather the numerical and categorical features
+# convert top of the spark df to pandas, the use native pandas fucntion to get numerical columns
+numerical_features = X_training.limit(1).toPandas()._get_numeric_data().columns.tolist()
+
+# if you're not numerical, you're categorical
 categorical_features = list(set(X_training.columns) - set(numerical_features))
+
+# The only categorical feature is the type of the orange-juice
+print('categorical_features:', categorical_features)
 
 # COMMAND ----------
 
 # DBTITLE 1,💾 Save for future use
 # Save into our database for future use
-def save_to_db(df, name):
-  (spark.createDataFrame(df)
+def save_to_db(df, name, pandas=False):
+  if pandas:
+    df = spark.createDataFrame(df)
+  
+  (df
         .write
         .mode("overwrite")
         .format("delta")
@@ -134,37 +166,214 @@ save_to_db(X_training, "X_training")
 
 # COMMAND ----------
 
-# DBTITLE 1,We define our processing pipeline, starting with our categorical columns
-from sklearn.pipeline import Pipeline
-from sklearn.impute import SimpleImputer
-from sklearn.preprocessing import OneHotEncoder, FunctionTransformer, StandardScaler
-
-preprocessing_pipeline = []
-
-one_hot_pipeline = Pipeline(steps=[
-    ("imputer", SimpleImputer(missing_values=None, strategy="constant", fill_value="")),
-    ("onehot", OneHotEncoder(handle_unknown="ignore"))
-])
-
-preprocessing_pipeline.append(("process_categorical", one_hot_pipeline, categorical_features))
+# MAGIC %md
+# MAGIC ## Pipeline
+# MAGIC 
+# MAGIC **Linear pipeline**: takes a dataframe, applies a series of transformations then an estimation/prediction
+# MAGIC 
+# MAGIC **Non-Linear Pipieline**: takes a dataframe, applies transformations in a Directed Acyclic Graph then an estimation/prediction
+# MAGIC 
+# MAGIC The pipeline steps are carried out in the same order of the index of the list.
 
 # COMMAND ----------
 
-# DBTITLE 1,Numerical column transformers
-numerical_pipeline = Pipeline(steps=[
-    ("converter", FunctionTransformer(lambda df: df.apply(pd.to_numeric, errors="coerce"))),
-    ("imputer", SimpleImputer(strategy="mean")),
-    ("scaler", StandardScaler())
-])
+# MAGIC %md
+# MAGIC ### String Indexer 
+# MAGIC 
+# MAGIC The purpose of a string indexer is to convert a categorical variable to a  
+# MAGIC numerical variable.
+# MAGIC 
+# MAGIC For example:
+# MAGIC  
+# MAGIC | col |  
+# MAGIC |-----|  
+# MAGIC |  a  |
+# MAGIC |  b  |
+# MAGIC |  c  |
+# MAGIC 
+# MAGIC becomes
+# MAGIC 
+# MAGIC For example:
+# MAGIC  
+# MAGIC | col |  
+# MAGIC |-----|  
+# MAGIC |  1  |
+# MAGIC |  2  |
+# MAGIC |  3  |
 
-preprocessing_pipeline.append(("process_numerical", numerical_pipeline, numerical_features))
+# COMMAND ----------
+
+from pyspark.ml.feature import StringIndexer
+
+df = spark.createDataFrame([('a',), ('b',), ('c',), ('d',)], ["col"])
+df = StringIndexer(inputCol="col", outputCol="col_num").fit(df).transform(df)
+display(df)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC Do you see anything conceptually wrong with using a string-indexed column for predicitive modelling?
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### One Hot Encoders 
+# MAGIC 
+# MAGIC To avoid sequential-categories, we have to one-hot encode.
+# MAGIC 
+# MAGIC One-hot encoding means that each column will be transformed into multiple columns.  
+# MAGIC The number of columns is equal to the number of distinct entries in the original column.  
+# MAGIC This can lead to a huge number of columns and potentially a degredaton of model peformance.
+# MAGIC 
+# MAGIC For example:
+# MAGIC  
+# MAGIC | col |  
+# MAGIC |-----|  
+# MAGIC |  1  |
+# MAGIC |  2  |
+# MAGIC |  3  |
+# MAGIC 
+# MAGIC 
+# MAGIC becomes
+# MAGIC | col1 | col2 | col3 |
+# MAGIC |------|------|------|  
+# MAGIC |  1   |  0   |   0  |
+# MAGIC |  0   |  1   |   0  |
+# MAGIC |  0   |  0   |   1  |
+
+# COMMAND ----------
+
+from pyspark.ml.feature import OneHotEncoder
+
+df = spark.createDataFrame([(1.0,), (2.0,), (3.0,), (4.0,), (5.0,)], ["c"])
+df = OneHotEncoder(inputCol="c", outputCol="c_onehot").fit(df).transform(df)
+df.show()
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC To understand the `c_onehot` column, we need to understand the sparse-vector type in spark
+# MAGIC 
+# MAGIC (i, [a1, b1, c1,...], [a2, b2, c2,...])
+# MAGIC 
+# MAGIC m - length of the vector  
+# MAGIC a1, a2,..., am - positions where a non-zero entry exists  
+# MAGIC b1, b2,..., bm - values at the above positions
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Imputing
+# MAGIC There will always be missing values, we need to impute them.
+
+# COMMAND ----------
+
+# DBTITLE 1,Categorical Imputer
+from pyspark.ml import Transformer
+
+class CategoricalImputer(Transformer):
+    def __init__(self, categorical_columns, fillValue=""):
+        super(CategoricalImputer, self).__init__()
+        self.categorical_columns = categorical_columns
+        self.fillValue = fillValue
+        
+    def _transform(self, df):
+        df = df.na.fill(self.fillValue, subset=self.categorical_columns)
+        return df
+      
+df = spark.createDataFrame([('a',), ('b',), (None,)], ["col"])
+display(CategoricalImputer(categorical_columns=['col'], fillValue='xxx').transform(df))
+
+# COMMAND ----------
+
+# DBTITLE 1,Numerical Imputer
+from pyspark.ml.feature import Imputer
+
+df = spark.createDataFrame([(1,),(3,),(3,),(None,)], ['col'])
+
+Imputer(inputCols=['col'], outputCols=['col'], strategy='median').fit(df).transform(df).show()
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Scaling
+# MAGIC 
+# MAGIC It is useful to rescale numerical columns to have a zero mean and unit variance.
+# MAGIC 
+# MAGIC A curious thing to take note of is that in pyspark, the scalar requires vector inputs. The scalar takes just a single column and this column must be of type `vector`. There is a custom transformer, the `VectorAssembler` which can vectorize multiple columns.
+
+# COMMAND ----------
+
+# DBTITLE 0,Scaling for Multiple Columns
+from pyspark.ml.feature import StandardScaler, VectorAssembler
+from pyspark.ml import Pipeline
+
+df = spark.createDataFrame([(1,1),(3,3),(3,4)], ['col1', 'col2'])
+assembler = VectorAssembler(inputCols=df.columns, outputCol="x_vec")
+scalar = StandardScaler(withMean=True, inputCol="x_vec", outputCol="x_sc").fit(X_training)
+# pipeline = Pipeline(stages=[assembler, scalar])
+# display(pipeline.fit(df).transform(df))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Categorical Pipeline
+# MAGIC 
+# MAGIC We have three transformers in our categorical pipeline
+# MAGIC 1. imputer
+# MAGIC 2. string indexer
+# MAGIC 3. one hot encoder
+
+# COMMAND ----------
+
+from pyspark.ml import Pipeline
+
+categorical_imputer = CategoricalImputer(categorical_columns=categorical_features, fillValue="")
+
+string_indexer = StringIndexer(inputCols=categorical_features, outputCols=[c + "_num" for c in categorical_features])
+
+onehot_encoder = OneHotEncoder(inputCols=[c + "_num" for c in categorical_features], outputCols=[c + "_oh" for c in categorical_features])
+
+# Put together in a pipeline
+categorical_pipeline = Pipeline(stages=[categorical_imputer, string_indexer, onehot_encoder])
+  
+display(categorical_pipeline.fit(X_validation).transform(X_validation).select([c + "_oh" for c in categorical_features]))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Numerical Pipeline
+# MAGIC 
+# MAGIC There are three transformations in our numerical pipeline
+# MAGIC 1. imputation
+# MAGIC 2. vectorization
+# MAGIC 3. scaling
+# MAGIC 
+# MAGIC We must think carefully about imputation and scaling.  
+# MAGIC 
+# MAGIC If we scale the training data, can we be sure to scale the validation/test/generalization data in the same way?
+
+# COMMAND ----------
+
+from pyspark.ml.feature import Imputer, StandardScaler, VectorAssembler
+
+numerical_imputer = Imputer(inputCols=numerical_features, outputCols=numerical_features, strategy='median')
+numerical_vectorizer = VectorAssembler(inputCols=numerical_features, outputCol='numerical_vec')
+numerical_scalar = StandardScaler(withMean=True, inputCol="numerical_vec", outputCol="numerical_scaled")
+
+numerical_pipeline = Pipeline(stages=[numerical_imputer, numerical_vectorizer, numerical_scalar])
+
+
+# COMMAND ----------
+
+display(numerical_pipeline.fit(X_validation).transform(X_validation))
 
 # COMMAND ----------
 
 # DBTITLE 1,Putting our transformers together
 from sklearn.compose import ColumnTransformer
 
-preprocessor = ColumnTransformer(preprocessing_pipeline, remainder="passthrough", sparse_threshold=0)
+pipeline = Pipeline(stages = [categorical_pipeline, numerical_pipeline])
 
 # COMMAND ----------
 

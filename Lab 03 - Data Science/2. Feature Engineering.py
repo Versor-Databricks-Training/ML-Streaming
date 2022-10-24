@@ -31,7 +31,7 @@ raw_data = data.to_pandas_on_spark()
 # MAGIC From chemistry, we know that pH approximates the concentration of hydrogen ions in a solution. We are going to use this information to include a new (potentially predictive) feature into our model: 
 # MAGIC 
 # MAGIC $$\\text{pH} = - \\text{log}_{10} ( h_{\\text{concentration}} )$$
-# MAGIC $$ \Rightarrow h_{\\text{concentration}} = 10^{\\text{pH}} $$
+# MAGIC $$ \Rightarrow h_{\\text{concentration}} = 10^{-\\text{pH}} $$
 
 # COMMAND ----------
 
@@ -109,3 +109,7 @@ fs.create_table(
 displayHTML("""
   <h3>Check out the <a href="/#feature-store/{}.features_oj_prediction_experiment">feature store</a> to see where our features are stored.</h3>
 """.format(DATABASE_NAME))
+
+# COMMAND ----------
+
+

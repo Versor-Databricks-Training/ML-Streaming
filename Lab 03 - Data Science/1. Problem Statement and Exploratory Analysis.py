@@ -44,31 +44,106 @@
 
 # COMMAND ----------
 
+# check the database in some other ways
+print(spark.conf.get("com.databricks.training.spark.dbName"))
+print(DATABASE_NAME)
+
+# COMMAND ----------
+
 # DBTITLE 1,Let's peek inside the database we just created specific to your credentials
+# recall that `display` gives a nice output format
 spark.sql(f"use {DATABASE_NAME}")
 display(spark.sql(f"SHOW TABLES"))
 
 # COMMAND ----------
 
 # DBTITLE 1,We now inspect the table of collected experiment data
-collected_data = spark.table('phytochemicals_quality')
+data = spark.table('phytochemicals_quality')
 
-display(collected_data)
+print(type(data))
+# recall that `display` enforces the read
+display(data)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC Recall that a predictive model is an approximation to a mathematical function.
+# MAGIC 
+# MAGIC Can you identify the likely inputs and output of the function?
+# MAGIC 
+# MAGIC Have you identified a regression or classification problem?
 
 # COMMAND ----------
 
 # DBTITLE 1,As a first step, use Databricks' built in data profiler to examine our dataset.
-display(collected_data)
+# use the `+` button to the right of `table` to expose the `Data Profile` tab
+# results are approximate
+display(data)
 
 # COMMAND ----------
 
-# DBTITLE 1,Looks like we have a slightly positive relationship between vitamin C and orange quality
-display(collected_data)
+# MAGIC %md
+# MAGIC 
+# MAGIC We want to predict the `quality` column, which is a categorial variable with two values. 
+# MAGIC 
+# MAGIC This makes our problem a binary classifier. Have you heard the phrase "cats n dogs"?
+
+# COMMAND ----------
+
+import pyspark.sql.functions as F
+import plotly.express as px
+import plotly.io as pio
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC Lets first check the spelling of the binary outcomes
+
+# COMMAND ----------
+
+display(data.select('quality').distinct())
+
+# COMMAND ----------
+
+targets = ['Good', 'Bad']
+data_targets = {t: data.filter(F.col('quality')==t) for t in targets}
+
+# COMMAND ----------
+
+counts = {t: data_targets[t].count() for t in targets}
+print(counts)
+
+print('class imbalance:', counts['Bad']/(counts['Bad'] + counts['Good']))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC The class imbalance shows that the baseline model (predicting every juice to be bad) has 80.3% accuracy
+
+# COMMAND ----------
+
+# A contingency table is an effective visualization for binary classification
+data.crosstab("quality","type").show()
+
+# COMMAND ----------
+
+display(data_targets['Good'])
+
+# COMMAND ----------
+
+# DBTITLE 1,Explore Vitamin C vs quality
+citric_bad = data.filter(F.col('quality')=='Bad').select(['citric_acid']).toPandas().values.reshape(-1)
+citric_good = data.filter(F.col('quality')=='Good').select(['citric_acid']).toPandas().values.reshape(-1)
+
+fig = px.histogram(citric_good)
+fig.show()
+fig = px.histogram(citric_bad)
+fig.show()
 
 # COMMAND ----------
 
 # DBTITLE 1,Your turn: have a play around! 🥳
-display(collected_data)
+display(data)
 
 # COMMAND ----------
 
@@ -81,9 +156,9 @@ import plotly.io as pio
 pio.templates.default = "plotly_white"
 
 # Converting dataframe into pandas for plotly
-collected_data_pd = collected_data.toPandas()
+data_pd = data.toPandas()
 
-fig = px.scatter(collected_data_pd,
+fig = px.scatter(data_pd,
                  x="vitamin_c",
                  y="enzymes",
                  color="quality")
