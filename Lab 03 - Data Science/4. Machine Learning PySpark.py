@@ -19,6 +19,15 @@
 
 # COMMAND ----------
 
+# MAGIC %md
+# MAGIC ## Import Data
+
+# COMMAND ----------
+
+import pyspark.sql.functions as F
+
+# COMMAND ----------
+
 # MAGIC %run "./Utils/Fetch_User_Metadata"
 
 # COMMAND ----------
@@ -30,18 +39,25 @@ display(data)
 
 # COMMAND ----------
 
-# MAGIC %sql
-# MAGIC 
-# MAGIC DESCRIBE HISTORY phytochemicals_quality
+# read in our split data
+train_data = spark.table('train_data');
+valid_data = spark.table('valid_data');
+test_data = spark.table('test_data');
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## We can create a new feature from the pH value
+# MAGIC ## Runtime derived feature: pH value
 # MAGIC From chemistry, we know that pH approximates the concentration of hydrogen ions in a solution. We are going to use this information to include a new (potentially predictive) feature into our model: 
 # MAGIC 
 # MAGIC $$\\text{pH} = - \\text{log}_{10} ( h_{\\text{concentration}} )$$
 # MAGIC $$ \Rightarrow h_{\\text{concentration}} = 10^{-\\text{pH}} $$
+
+# COMMAND ----------
+
+# Using pandas-on-spark, we can use pandas syntax on a distributed spark dataframe
+import pyspark.pandas as ps
+raw_data = data.to_pandas_on_spark()
 
 # COMMAND ----------
 
@@ -50,12 +66,14 @@ raw_data = raw_data.assign(h_concentration=lambda x: 1/(10**x["pH"]))
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC Have you heard of cross-validation?   
-# MAGIC Can you explain what this has to do with train/validation/test split?
+# MAGIC We now look at the distribution of our newly calculated feature - looks good!
+# MAGIC 
+# MAGIC What we mean by that it "looks good" is that it is approximately normal. 
+# MAGIC Later we will scale our numerical variables to have mean zero and unit variance,
+# MAGIC which is only meaningful on approximately normal distributions
 
 # COMMAND ----------
 
-# DBTITLE 1,We now look at the distribution of our newly calculated feature - looks good!
 import seaborn as sns
 import matplotlib.pyplot as plt
 
@@ -67,8 +85,18 @@ plt.show()
 
 # COMMAND ----------
 
-# DBTITLE 1,Our chemists also tell us that the ratio of acidity to sugar may be a useful predictor of quality
+# MAGIC %md
+# MAGIC ## Runtime derived feature: ratio of acidity to sugar
+# MAGIC 
+# MAGIC This is a second derived feature which will be computed at runtime.
+
+# COMMAND ----------
+
 raw_data = raw_data.assign(acidity_ratio=lambda x: x["citric_acid"]/x["residual_sugar"])
+
+# COMMAND ----------
+
+# DBTITLE 1,This distribution is quite skewed
 sns.displot(raw_data["acidity_ratio"].to_numpy())
 plt.ylabel("Count")
 plt.xlabel("Acidity ratio (no units)")
@@ -76,9 +104,7 @@ plt.show()
 
 # COMMAND ----------
 
-# DBTITLE 1,This distribution is quite skewed so we apply a log transformation - looks much better!
-import numpy as np
-
+# DBTITLE 1,We apply a log transformation - looks much better!
 raw_data = raw_data.assign(acidity_ratio=lambda x: np.log(x["citric_acid"]/x["residual_sugar"]))
 sns.displot(raw_data["acidity_ratio"].to_numpy())
 
@@ -97,46 +123,31 @@ feature_table = f"{DATABASE_NAME}.features_oj_prediction_experiment"
 
 feature_lookup = FeatureLookup(
   table_name=feature_table,
-  feature_names=["h_concentration", "acidity_ratio"],
-  lookup_key = ["customer_id"]
+  feature_names=['total_sulfur_dioxide_avg', "fixed_acidity_avg", "total_sulfur_dioxide_std", "fixed_acidity_std"],
+  lookup_key = ["type"]
 )
 
 # COMMAND ----------
 
 # DBTITLE 1,We generate a training and validation data set using our feature lookups
-training_set = fs.create_training_set(
+training_data = fs.create_training_set(
   df=train_data,
   feature_lookups=[feature_lookup],
   label = 'quality',
   exclude_columns="customer_id"
-)
+).load_df()
 
-validation_set = fs.create_training_set(
+validation_data = fs.create_training_set(
   df=valid_data,
   feature_lookups=[feature_lookup],
   label = 'quality',
   exclude_columns="customer_id"
-)
-
-training_data = training_set.load_df()
-validation_data = validation_set.load_df()
+).load_df()
 
 # COMMAND ----------
 
-display(fs.create_training_set(
-  df=spark.createDataFrame(df_inf),
-  feature_lookups=[feature_lookup],
-  label = 'quality',
-  exclude_columns="customer_id"
-).load_df())
-
-# COMMAND ----------
-
-
-
-# COMMAND ----------
-
-display(training_data)
+# check that customer_id has been dropped
+"customer_id" in training_data.columns
 
 # COMMAND ----------
 
@@ -170,16 +181,12 @@ display(training_data)
 
 # COMMAND ----------
 
-import pyspark.sql.functions as F
-
-# COMMAND ----------
-
 # DBTITLE 1,Reformat target variable
-X_training = training_data.drop(F.col('quality'))
-y_training = training_data.select(F.col('quality') == "Good").withColumnRenamed("(quality = Good)", "quality").select(F.col('quality').cast('int'))
+X_training = train_data.drop(F.col('quality'))
+y_training = train_data.select(F.col('quality') == "Good").withColumnRenamed("(quality = Good)", "quality").select(F.col('quality').cast('int'))
 
-X_validation = validation_data.drop(F.col('quality'))
-y_validation = validation_data.select(F.col('quality') == "Good").withColumnRenamed("(quality = Good)", "quality").select(F.col('quality').cast('int'))
+X_validation = valid_data.drop(F.col('quality'))
+y_validation = valid_data.select(F.col('quality') == "Good").withColumnRenamed("(quality = Good)", "quality").select(F.col('quality').cast('int'))
 
 # COMMAND ----------
 
@@ -197,6 +204,9 @@ print('categorical_features:', categorical_features)
 
 # DBTITLE 1,💾 Save for future use
 # Save into our database for future use
+# Just to be clear, these tables have the precomputed derived features and have been preprocessed.
+# We have not yet done things like imputation and scaling.
+
 def save_to_db(df, name, pandas=False):
   if pandas:
     df = spark.createDataFrame(df)
@@ -239,8 +249,6 @@ save_to_db(X_training, "X_training")
 # MAGIC |  c  |
 # MAGIC 
 # MAGIC becomes
-# MAGIC 
-# MAGIC For example:
 # MAGIC  
 # MAGIC | col |  
 # MAGIC |-----|  
@@ -264,8 +272,11 @@ display(df)
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ### One Hot Encoders 
-# MAGIC 
+# MAGIC ### One Hot Encoders
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC To avoid sequential-categories, we have to one-hot encode.
 # MAGIC 
 # MAGIC One-hot encoding means that each column will be transformed into multiple columns.  
@@ -316,6 +327,9 @@ df.show()
 # COMMAND ----------
 
 # DBTITLE 1,Categorical Imputer
+# I am not aware of a native categorical imputer in spark.
+# It is pretty straightforward to build a custom transformer
+
 from pyspark.ml import Transformer
 
 class CategoricalImputer(Transformer):
@@ -344,10 +358,13 @@ Imputer(inputCols=['col'], outputCols=['col'], strategy='median').fit(df).transf
 
 # MAGIC %md
 # MAGIC ### Scaling
-# MAGIC 
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC It is useful to rescale numerical columns to have a zero mean and unit variance.
 # MAGIC 
-# MAGIC A curious thing to take note of is that in pyspark, the scalar requires vector inputs. The scalar takes just a single column and this column must be of type `vector`. There is a custom transformer, the `VectorAssembler` which can vectorize multiple columns.
+# MAGIC A curious thing to take note of is that in pyspark, StandardScaler requires vector inputs. StandardScaler takes just a single column and this column must be of type `vector`. There is a transformer, the `VectorAssembler` which can vectorize multiple columns.
 
 # COMMAND ----------
 
@@ -356,10 +373,43 @@ from pyspark.ml.feature import StandardScaler, VectorAssembler
 from pyspark.ml import Pipeline
 
 df = spark.createDataFrame([(1,1),(3,3),(3,4)], ['col1', 'col2'])
+
 assembler = VectorAssembler(inputCols=df.columns, outputCol="x_vec")
-scalar = StandardScaler(withMean=True, inputCol="x_vec", outputCol="x_sc").fit(X_training)
-# pipeline = Pipeline(stages=[assembler, scalar])
-# display(pipeline.fit(df).transform(df))
+scalar = StandardScaler(withMean=True, inputCol="x_vec", outputCol="x_sc")
+
+pipeline = Pipeline(stages=[assembler, scalar])
+display(pipeline.fit(df).transform(df))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Runtime Derived Features
+
+# COMMAND ----------
+
+raw_data = raw_data.assign(acidity_ratio=lambda x: x["citric_acid"]/x["residual_sugar"])
+
+class AcidityRatioTransformer(Transformer):
+    def __init__(self, ratio_colname, acid_colname, sugar_colname):
+        super(AcidityRatioTransformer, self).__init__()
+        self.acid_colname = acid_colname
+        self.sugar_colname = sugar_colname
+        self.ratio_colname = ratio_colname
+
+    def _transform(self, df):
+        df = df.withColumn(self.ratio_colname, F.log(F.col(self.acid_colname)/F.col(self.sugar_colname)) )
+        return df
+      
+      
+class HConTransformer(Transformer):
+    def __init__(self, hconc_colname, ph_colname):
+        super(HConTransformer, self).__init__()
+        self.hconc_colname = hconc_colname
+        self.ph_colname = ph_colname
+
+    def _transform(self, df):
+        df = df.withColumn(self.hconc_colname, F.pow(10, - F.col(self.ph_colname)))
+        return df
 
 # COMMAND ----------
 
@@ -373,6 +423,8 @@ scalar = StandardScaler(withMean=True, inputCol="x_vec", outputCol="x_sc").fit(X
 
 # COMMAND ----------
 
+# note that the suffix _oh is short for one-hot
+
 from pyspark.ml import Pipeline
 
 categorical_imputer = CategoricalImputer(categorical_columns=categorical_features, fillValue="")
@@ -383,7 +435,8 @@ onehot_encoder = OneHotEncoder(inputCols=[c + "_num" for c in categorical_featur
 
 # Put together in a pipeline
 categorical_pipeline = Pipeline(stages=[categorical_imputer, string_indexer, onehot_encoder])
-  
+
+# as a demonstration we fit and transform the pipeline but in the real thing, we must be a bit more careful
 display(categorical_pipeline.fit(X_validation).transform(X_validation).select([c + "_oh" for c in categorical_features]))
 
 # COMMAND ----------
@@ -393,33 +446,37 @@ display(categorical_pipeline.fit(X_validation).transform(X_validation).select([c
 # MAGIC 
 # MAGIC There are three transformations in our numerical pipeline
 # MAGIC 1. imputation
-# MAGIC 2. vectorization
-# MAGIC 3. scaling
-# MAGIC 
-# MAGIC We must think carefully about imputation and scaling.  
-# MAGIC 
-# MAGIC If we scale the training data, can we be sure to scale the validation/test/generalization data in the same way?
+# MAGIC 2. runtime derived features
+# MAGIC 3. vectorization
+# MAGIC 4. scaling
 
 # COMMAND ----------
 
 from pyspark.ml.feature import Imputer, StandardScaler, VectorAssembler
 
-numerical_imputer = Imputer(inputCols=numerical_features, outputCols=numerical_features, strategy='median')
-numerical_vectorizer = VectorAssembler(inputCols=numerical_features, outputCol='numerical_vec')
+# The runtime derived features
+acidity_transformer = AcidityRatioTransformer("acidity_ratio", 'citric_acid', 'residual_sugar')
+hcon_transformer = HConTransformer('h_concentration', "pH")
+
+# We mustn't forget to include the derived numerical features in the list of features to be scaled
+derived_numerical_features = numerical_features + ['acidity_ratio', 'h_concentration']
+
+numerical_imputer = Imputer(inputCols=derived_numerical_features, outputCols=derived_numerical_features, strategy='median')
+
+numerical_vectorizer = VectorAssembler(inputCols=derived_numerical_features, outputCol='numerical_vec')
+
 numerical_scalar = StandardScaler(withMean=True, inputCol="numerical_vec", outputCol="numerical_scaled")
 
-numerical_pipeline = Pipeline(stages=[numerical_imputer, numerical_vectorizer, numerical_scalar])
-
+# We must impute after computing the derived features
+numerical_pipeline = Pipeline(stages=[acidity_transformer, hcon_transformer, numerical_imputer, numerical_vectorizer, numerical_scalar])
 
 # COMMAND ----------
 
-display(numerical_pipeline.fit(X_validation).transform(X_validation))
+# numerical_pipeline.fit(X_validation).transform(X_validation).toPandas()[['acidity_ratio', 'h_concentration']]
 
 # COMMAND ----------
 
 # DBTITLE 1,Putting our transformers together
-from sklearn.compose import ColumnTransformer
-
 pipeline = Pipeline(stages = [categorical_pipeline, numerical_pipeline])
 
 # COMMAND ----------

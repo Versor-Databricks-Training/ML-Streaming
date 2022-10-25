@@ -83,21 +83,39 @@ assert data.count() - (train_data.count() + test_data.count() + valid_data.count
 
 # COMMAND ----------
 
-# MAGIC %md
-# MAGIC ### Example: mean of basic feature 
+# We save the split data as tables, we will need them in subsequent notebooks
+
+table_name = "train_data"
+train_data.write.saveAsTable(table_name)
+
+table_name = "test_data"
+test_data.write.saveAsTable(table_name)
+
+table_name = "valid_data"
+valid_data.write.saveAsTable(table_name)
 
 # COMMAND ----------
 
-train_data.columns
+# MAGIC %md
+# MAGIC 
+# MAGIC ### Example: Aggregated statistics of basic features
+# MAGIC 
+# MAGIC As a demonstration, we now pre-compute some aggreagated statistics of two basic features.  
 
 # COMMAND ----------
 
 from pyspark.sql.functions import stddev, avg
 
-display(train_data.groupBy("type").agg(avg("total_sulfur_dioxide").alias("total_sulfur_dioxide_avg"), 
+derived_features = train_data.groupBy("type").agg(avg("total_sulfur_dioxide").alias("total_sulfur_dioxide_avg"), 
                                        avg("fixed_acidity").alias("fixed_acidity_avg"), 
                                        stddev("total_sulfur_dioxide").alias("total_sulfur_dioxide_std"),
-                                       stddev("fixed_acidity").alias("fixed_acidity_std")))
+                                       stddev("fixed_acidity").alias("fixed_acidity_std"))
+
+data_derfeatures = data.join(derived_features, on='type', how='left')
+
+# COMMAND ----------
+
+display(data_derfeatures)
 
 # COMMAND ----------
 
@@ -139,14 +157,16 @@ display(train_data.groupBy("type").agg(avg("total_sulfur_dioxide").alias("total_
 # COMMAND ----------
 
 # DBTITLE 0,We now register our features into the feature store
+# We use the primary key as 'type'. This should exist for all unseen data.
+
 from databricks import feature_store
 
 fs = feature_store.FeatureStoreClient()
 
 fs.create_table(
   name=f"{DATABASE_NAME}.features_oj_prediction_experiment",
-  primary_keys=["customer_id"],
-  df=raw_data.to_spark(),
+  primary_keys=["type"],
+  df=derived_features,
   description="""
   Features for predicting the quality of an orange. 
   Additionally, I have a calculated column called acidity_ratio=log(citric_acid/residual sugar) as well as calculating the hydrogen concentration.
