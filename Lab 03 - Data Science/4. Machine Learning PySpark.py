@@ -1,7 +1,11 @@
 # Databricks notebook source
 # MAGIC %md-sandbox
 # MAGIC 
-# MAGIC # Let the Machines Learn! 
+# MAGIC # Let the Machines Learn!
+
+# COMMAND ----------
+
+# MAGIC %md-sandbox
 # MAGIC 
 # MAGIC <div style="float:right">
 # MAGIC   <img src="https://ajmal-field-demo.s3.ap-southeast-2.amazonaws.com/apj-sa-bootcamp/machine_learning_model.png" width="1000px">
@@ -25,6 +29,7 @@
 # COMMAND ----------
 
 import pyspark.sql.functions as F
+import numpy as np
 
 # COMMAND ----------
 
@@ -181,24 +186,32 @@ validation_data = fs.create_training_set(
 
 # COMMAND ----------
 
-# DBTITLE 1,Reformat target variable
-X_training = train_data.drop(F.col('quality'))
-y_training = train_data.select(F.col('quality') == "Good").withColumnRenamed("(quality = Good)", "quality").select(F.col('quality').cast('int'))
+training_data.withColumn('quality', F.col('quality') == "Good").select('quality').show(5)
 
-X_validation = valid_data.drop(F.col('quality'))
-y_validation = valid_data.select(F.col('quality') == "Good").withColumnRenamed("(quality = Good)", "quality").select(F.col('quality').cast('int'))
+# COMMAND ----------
+
+# DBTITLE 1,Reformat target variable
+training_data = training_data.withColumn('quality', (F.col('quality') == "Good").cast('int'))
+validation_data = validation_data.withColumn('quality', (F.col('quality') == "Good").cast('int'))
 
 # COMMAND ----------
 
 # DBTITLE 1,Gather the numerical and categorical features
 # convert top of the spark df to pandas, the use native pandas fucntion to get numerical columns
-numerical_features = X_training.limit(1).toPandas()._get_numeric_data().columns.tolist()
+# we have to remove the label column
+numerical_features = training_data.limit(1).toPandas()._get_numeric_data().columns.tolist()
+numerical_features = [c for c in numerical_features if c != 'quality']
 
 # if you're not numerical, you're categorical
-categorical_features = list(set(X_training.columns) - set(numerical_features))
+categorical_features = list(set(training_data.columns) - set(numerical_features))
+categorical_features = [c for c in categorical_features if c != 'quality']
 
-# The only categorical feature is the type of the orange-juice
+# The only categorical feature is the type of the orange-juice (we removed customer_id when we set up the feature store lookup)
 print('categorical_features:', categorical_features)
+
+# COMMAND ----------
+
+'quality' in numerical_features
 
 # COMMAND ----------
 
@@ -218,8 +231,8 @@ def save_to_db(df, name, pandas=False):
         .saveAsTable(f"{DATABASE_NAME}.{name}")
   )
 
-save_to_db(X_validation, "X_validation")
-save_to_db(X_training, "X_training")
+save_to_db(training_data, "training_data")
+save_to_db(validation_data, "validation_data")
 
 # COMMAND ----------
 
@@ -387,8 +400,6 @@ display(pipeline.fit(df).transform(df))
 
 # COMMAND ----------
 
-raw_data = raw_data.assign(acidity_ratio=lambda x: x["citric_acid"]/x["residual_sugar"])
-
 class AcidityRatioTransformer(Transformer):
     def __init__(self, ratio_colname, acid_colname, sugar_colname):
         super(AcidityRatioTransformer, self).__init__()
@@ -437,7 +448,7 @@ onehot_encoder = OneHotEncoder(inputCols=[c + "_num" for c in categorical_featur
 categorical_pipeline = Pipeline(stages=[categorical_imputer, string_indexer, onehot_encoder])
 
 # as a demonstration we fit and transform the pipeline but in the real thing, we must be a bit more careful
-display(categorical_pipeline.fit(X_validation).transform(X_validation).select([c + "_oh" for c in categorical_features]))
+display(categorical_pipeline.fit(validation_data).transform(validation_data))
 
 # COMMAND ----------
 
@@ -472,58 +483,35 @@ numerical_pipeline = Pipeline(stages=[acidity_transformer, hcon_transformer, num
 
 # COMMAND ----------
 
-# numerical_pipeline.fit(X_validation).transform(X_validation).toPandas()[['acidity_ratio', 'h_concentration']]
+numerical_pipeline.fit(validation_data).transform(validation_data).toPandas()[:2]
 
 # COMMAND ----------
 
-# DBTITLE 1,Putting our transformers together
-pipeline = Pipeline(stages = [categorical_pipeline, numerical_pipeline])
+# MAGIC %md
+# MAGIC We combine the categorical and numerical pipelines
+
+# COMMAND ----------
+
+final_assembler = VectorAssembler(inputCols=['type_oh', 'numerical_scaled'], outputCol="features")
+
+pipeline = Pipeline(stages = [categorical_pipeline, numerical_pipeline, final_assembler])
 
 # COMMAND ----------
 
 # DBTITLE 1,Our pipeline needs to end in an estimator, we will use a random forrest at first
-from sklearn.ensemble import RandomForestClassifier
+from pyspark.ml.classification import RandomForestClassifier
 
-rf_params = {
-  'bootstrap': False,
-  'criterion': "entropy",
-  'min_samples_leaf': 50,
-  'min_samples_split': 100
-}
+rf_params = {'numTrees':3, 
+             'maxDepth':2, 
+             'featuresCol':'features',
+             'labelCol': "quality", 
+             'seed':42}
 
-classifier = RandomForestClassifier(**rf_params)
-
-# COMMAND ----------
-
-# DBTITLE 1,We can now inspect our modelling pipeline
-from sklearn import set_config
-from sklearn.pipeline import Pipeline
-
-set_config(display="diagram")
-
-rf_model = Pipeline([
-    ("preprocessor", preprocessor),
-    ("classifier", classifier),
-])
-
-rf_model
+rf = RandomForestClassifier(**rf_params)
 
 # COMMAND ----------
 
-# MAGIC %md-sandbox
-# MAGIC ## Databricks uses mlflow for experiment tracking, logging, and production
-# MAGIC 
-# MAGIC <div style="float:right">
-# MAGIC   <img src="https://databricks.com/wp-content/uploads/2020/06/blog-mlflow-model-1.png" width="1000px">
-# MAGIC </div>
-# MAGIC 
-# MAGIC We are going to use the sklearn 'flavour' in mlflow. A couple of things to note about Mlflow:
-# MAGIC 
-# MAGIC - Mlflow is going to help orchestrate the end-to-end process for our machine learning use-case.
-# MAGIC - **runs**: MLflow Tracking is organized around the concept of runs, which are executions of some piece of data science code.
-# MAGIC - **experiments**: MLflow allows you to group runs under experiments, which can be useful for comparing runs intended to tackle a particular task.
-# MAGIC 
-# MAGIC 👇 We are going to create an experiment to store our machine learning model runs
+model = Pipeline(stages = [categorical_pipeline, numerical_pipeline, rf])
 
 # COMMAND ----------
 
