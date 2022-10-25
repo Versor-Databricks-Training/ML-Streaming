@@ -183,32 +183,73 @@ display(data)
 
 # COMMAND ----------
 
-# DBTITLE 1,More custom plotting - we can also use the plotly within our notebooks 
-import plotly.express as ps
-import plotly.express as px
-import plotly.io as pio
-
-# Plotting preferences
-pio.templates.default = "plotly_white"
-
-# Converting dataframe into pandas for plotly
-data_pd = data.toPandas()
-
-fig = px.scatter(data_pd,
-                 x="vitamin_c",
-                 y="enzymes",
-                 color="quality")
-
-# Customisations
-fig.update_layout(font_family="Arial",
-                  title="Enzymes as a function of Vitaminc C",
-                  yaxis_title="Enzymes",
-                  xaxis_title="Vitamin C",
-                  legend_title_text="Rated Quality",
-                  font=dict(size=20))
-
-fig.show()
+# MAGIC %md
+# MAGIC 
+# MAGIC ## Derived Feature exploration
 
 # COMMAND ----------
 
+# MAGIC %md
+# MAGIC ### Runtime derived feature: pH value
+# MAGIC From chemistry, we know that pH approximates the concentration of hydrogen ions in a solution. We are going to use this information to include a new (potentially predictive) feature into our model: 
+# MAGIC 
+# MAGIC $$\\text{pH} = - \\text{log}_{10} ( h_{\\text{concentration}} )$$
+# MAGIC $$ \Rightarrow h_{\\text{concentration}} = 10^{-\\text{pH}} $$
 
+# COMMAND ----------
+
+# Using pandas-on-spark, we can use pandas syntax on a distributed spark dataframe
+import pyspark.pandas as ps
+raw_data = data.to_pandas_on_spark()
+
+# COMMAND ----------
+
+raw_data = raw_data.assign(h_concentration=lambda x: 1/(10**x["pH"]))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC We now look at the distribution of our newly calculated feature - looks good!
+# MAGIC 
+# MAGIC What we mean by that it "looks good" is that it is approximately normal. 
+# MAGIC Later we will scale our numerical variables to have mean zero and unit variance,
+# MAGIC which is only meaningful on approximately normal distributions
+
+# COMMAND ----------
+
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+sns.set_context("paper", font_scale=1.8)
+sns.displot(raw_data["h_concentration"].to_numpy())
+plt.ylabel("Count")
+plt.xlabel("hydrogen concentration (moles)")
+plt.show()
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Runtime derived feature: ratio of acidity to sugar
+# MAGIC 
+# MAGIC This is a second derived feature which will be computed at runtime.
+
+# COMMAND ----------
+
+raw_data = raw_data.assign(acidity_ratio=lambda x: x["citric_acid"]/x["residual_sugar"])
+
+# COMMAND ----------
+
+sns.displot(raw_data["acidity_ratio"].to_numpy())
+plt.ylabel("Count")
+plt.xlabel("Acidity ratio (no units)")
+plt.show()
+
+# COMMAND ----------
+
+# DBTITLE 1,We apply a log transformation - looks much better!
+raw_data = raw_data.assign(acidity_ratio=lambda x: np.log(x["citric_acid"]/x["residual_sugar"]))
+sns.displot(raw_data["acidity_ratio"].to_numpy())
+
+plt.ylabel("Count")
+plt.xlabel("Acidity ratio (no units)")
+plt.show()

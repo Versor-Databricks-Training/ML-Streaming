@@ -44,81 +44,6 @@ display(data)
 
 # COMMAND ----------
 
-# read in our split data
-train_data = spark.table('train_data');
-valid_data = spark.table('valid_data');
-test_data = spark.table('test_data');
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Runtime derived feature: pH value
-# MAGIC From chemistry, we know that pH approximates the concentration of hydrogen ions in a solution. We are going to use this information to include a new (potentially predictive) feature into our model: 
-# MAGIC 
-# MAGIC $$\\text{pH} = - \\text{log}_{10} ( h_{\\text{concentration}} )$$
-# MAGIC $$ \Rightarrow h_{\\text{concentration}} = 10^{-\\text{pH}} $$
-
-# COMMAND ----------
-
-# Using pandas-on-spark, we can use pandas syntax on a distributed spark dataframe
-import pyspark.pandas as ps
-raw_data = data.to_pandas_on_spark()
-
-# COMMAND ----------
-
-raw_data = raw_data.assign(h_concentration=lambda x: 1/(10**x["pH"]))
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC We now look at the distribution of our newly calculated feature - looks good!
-# MAGIC 
-# MAGIC What we mean by that it "looks good" is that it is approximately normal. 
-# MAGIC Later we will scale our numerical variables to have mean zero and unit variance,
-# MAGIC which is only meaningful on approximately normal distributions
-
-# COMMAND ----------
-
-import seaborn as sns
-import matplotlib.pyplot as plt
-
-sns.set_context("paper", font_scale=1.8)
-sns.displot(raw_data["h_concentration"].to_numpy())
-plt.ylabel("Count")
-plt.xlabel("hydrogen concentration (moles)")
-plt.show()
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Runtime derived feature: ratio of acidity to sugar
-# MAGIC 
-# MAGIC This is a second derived feature which will be computed at runtime.
-
-# COMMAND ----------
-
-raw_data = raw_data.assign(acidity_ratio=lambda x: x["citric_acid"]/x["residual_sugar"])
-
-# COMMAND ----------
-
-# DBTITLE 1,This distribution is quite skewed
-sns.displot(raw_data["acidity_ratio"].to_numpy())
-plt.ylabel("Count")
-plt.xlabel("Acidity ratio (no units)")
-plt.show()
-
-# COMMAND ----------
-
-# DBTITLE 1,We apply a log transformation - looks much better!
-raw_data = raw_data.assign(acidity_ratio=lambda x: np.log(x["citric_acid"]/x["residual_sugar"]))
-sns.displot(raw_data["acidity_ratio"].to_numpy())
-
-plt.ylabel("Count")
-plt.xlabel("Acidity ratio (no units)")
-plt.show()
-
-# COMMAND ----------
-
 # DBTITLE 1,We need a FeatureLookup to pull our custom features from our feature store
 from databricks.feature_store import FeatureLookup, FeatureStoreClient
 
@@ -131,6 +56,23 @@ feature_lookup = FeatureLookup(
   feature_names=['total_sulfur_dioxide_avg', "fixed_acidity_avg", "total_sulfur_dioxide_std", "fixed_acidity_std"],
   lookup_key = ["type"]
 )
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Train/valid/test split
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC Recall that our precomputed features in the feature store, were computed from only the training data.
+
+# COMMAND ----------
+
+# DBTITLE 1,Read in our split data
+train_data = spark.table('train_data');
+valid_data = spark.table('valid_data');
+test_data = spark.table('test_data');
 
 # COMMAND ----------
 
@@ -215,10 +157,16 @@ print('categorical_features:', categorical_features)
 
 # COMMAND ----------
 
-# DBTITLE 1,💾 Save for future use
+# MAGIC %md
+# MAGIC ### 💾 Persist training/valid data
+# MAGIC Save into our database for future use Just to be clear, these tables have the precomputed derived features and have been preprocessed. We have not yet done things like imputation, scaling and runtime features. These steps will be in the pipeline which we study next. 
+
+# COMMAND ----------
+
 # Save into our database for future use
 # Just to be clear, these tables have the precomputed derived features and have been preprocessed.
-# We have not yet done things like imputation and scaling.
+# We have not yet done things like imputation, scaling and runtime features. 
+# These steps will be in the pipeline which we study next. 
 
 def save_to_db(df, name, pandas=False):
   if pandas:
@@ -492,6 +440,7 @@ numerical_pipeline.fit(validation_data).transform(validation_data).toPandas()[:2
 
 # COMMAND ----------
 
+# This final assmebler combines the categorical and numerical columns into one
 final_assembler = VectorAssembler(inputCols=['type_oh', 'numerical_scaled'], outputCol="features")
 
 pipeline = Pipeline(stages = [categorical_pipeline, numerical_pipeline, final_assembler])
