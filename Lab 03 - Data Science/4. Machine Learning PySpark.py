@@ -37,31 +37,54 @@ display(data)
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC # Train test Split
+# MAGIC ## We can create a new feature from the pH value
+# MAGIC From chemistry, we know that pH approximates the concentration of hydrogen ions in a solution. We are going to use this information to include a new (potentially predictive) feature into our model: 
+# MAGIC 
+# MAGIC $$\\text{pH} = - \\text{log}_{10} ( h_{\\text{concentration}} )$$
+# MAGIC $$ \Rightarrow h_{\\text{concentration}} = 10^{-\\text{pH}} $$
 
 # COMMAND ----------
 
-# MAGIC %md
-# MAGIC Can you explain in your own words the use of training/validation/test sets?
-
-# COMMAND ----------
-
-train_portion = 0.7
-valid_portion = 0.2
-test_portion = 0.1
-
-train_data, test_data, valid_data = data.randomSplit([train_portion, valid_portion, test_portion], seed=42)
-
-# COMMAND ----------
-
-# check the math worked
-assert data.count() - (train_data.count() + test_data.count() + valid_data.count()) == 0
+raw_data = raw_data.assign(h_concentration=lambda x: 1/(10**x["pH"]))
 
 # COMMAND ----------
 
 # MAGIC %md
 # MAGIC Have you heard of cross-validation?   
 # MAGIC Can you explain what this has to do with train/validation/test split?
+
+# COMMAND ----------
+
+# DBTITLE 1,We now look at the distribution of our newly calculated feature - looks good!
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+sns.set_context("paper", font_scale=1.8)
+sns.displot(raw_data["h_concentration"].to_numpy())
+plt.ylabel("Count")
+plt.xlabel("hydrogen concentration (moles)")
+plt.show()
+
+# COMMAND ----------
+
+# DBTITLE 1,Our chemists also tell us that the ratio of acidity to sugar may be a useful predictor of quality
+raw_data = raw_data.assign(acidity_ratio=lambda x: x["citric_acid"]/x["residual_sugar"])
+sns.displot(raw_data["acidity_ratio"].to_numpy())
+plt.ylabel("Count")
+plt.xlabel("Acidity ratio (no units)")
+plt.show()
+
+# COMMAND ----------
+
+# DBTITLE 1,This distribution is quite skewed so we apply a log transformation - looks much better!
+import numpy as np
+
+raw_data = raw_data.assign(acidity_ratio=lambda x: np.log(x["citric_acid"]/x["residual_sugar"]))
+sns.displot(raw_data["acidity_ratio"].to_numpy())
+
+plt.ylabel("Count")
+plt.xlabel("Acidity ratio (no units)")
+plt.show()
 
 # COMMAND ----------
 

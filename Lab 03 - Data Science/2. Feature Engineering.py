@@ -17,8 +17,12 @@
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC # Derived Features
-# MAGIC 
+# MAGIC ## Derived Features
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Overview
 # MAGIC There are two methods to compute derived features:  
 # MAGIC <br> 
 # MAGIC 1. **Precompute**
@@ -50,48 +54,50 @@ raw_data = data.to_pandas_on_spark()
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## We can create a new feature from the pH value
-# MAGIC From chemistry, we know that pH approximates the concentration of hydrogen ions in a solution. We are going to use this information to include a new (potentially predictive) feature into our model: 
+# MAGIC Can you explain in your own words the use of training/validation/test sets?
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Train/Valid/Test Split
 # MAGIC 
-# MAGIC $$\\text{pH} = - \\text{log}_{10} ( h_{\\text{concentration}} )$$
-# MAGIC $$ \Rightarrow h_{\\text{concentration}} = 10^{-\\text{pH}} $$
+# MAGIC Before we create aggregate features, we have to perform the split into train/valid/test.  
+# MAGIC 
+# MAGIC Can you see a problem if we aggregate before splitting?
+# MAGIC 
+# MAGIC That's right, data leakage!
 
 # COMMAND ----------
 
-raw_data = raw_data.assign(h_concentration=lambda x: 1/(10**x["pH"]))
+# DBTITLE 1,Train/Valid/Test Split
+train_portion = 0.7
+valid_portion = 0.2
+test_portion = 0.1
+
+train_data, test_data, valid_data = data.randomSplit([train_portion, valid_portion, test_portion], seed=42)
 
 # COMMAND ----------
 
-# DBTITLE 1,We now look at the distribution of our newly calculated feature - looks good!
-import seaborn as sns
-import matplotlib.pyplot as plt
-
-sns.set_context("paper", font_scale=1.8)
-sns.displot(raw_data["h_concentration"].to_numpy())
-plt.ylabel("Count")
-plt.xlabel("hydrogen concentration (moles)")
-plt.show()
+# check the math worked
+assert data.count() - (train_data.count() + test_data.count() + valid_data.count()) == 0
 
 # COMMAND ----------
 
-# DBTITLE 1,Our chemists also tell us that the ratio of acidity to sugar may be a useful predictor of quality
-raw_data = raw_data.assign(acidity_ratio=lambda x: x["citric_acid"]/x["residual_sugar"])
-sns.displot(raw_data["acidity_ratio"].to_numpy())
-plt.ylabel("Count")
-plt.xlabel("Acidity ratio (no units)")
-plt.show()
+# MAGIC %md
+# MAGIC ### Example: mean of basic feature 
 
 # COMMAND ----------
 
-# DBTITLE 1,This distribution is quite skewed so we apply a log transformation - looks much better!
-import numpy as np
+train_data.columns
 
-raw_data = raw_data.assign(acidity_ratio=lambda x: np.log(x["citric_acid"]/x["residual_sugar"]))
-sns.displot(raw_data["acidity_ratio"].to_numpy())
+# COMMAND ----------
 
-plt.ylabel("Count")
-plt.xlabel("Acidity ratio (no units)")
-plt.show()
+from pyspark.sql.functions import stddev, avg
+
+display(train_data.groupBy("type").agg(avg("total_sulfur_dioxide").alias("total_sulfur_dioxide_avg"), 
+                                       avg("fixed_acidity").alias("fixed_acidity_avg"), 
+                                       stddev("total_sulfur_dioxide").alias("total_sulfur_dioxide_std"),
+                                       stddev("fixed_acidity").alias("fixed_acidity_std")))
 
 # COMMAND ----------
 
@@ -111,6 +117,8 @@ plt.show()
 # MAGIC <div style="text-align:bottom">
 # MAGIC   <img src="https://ajmal-field-demo.s3.ap-southeast-2.amazonaws.com/apj-sa-bootcamp/feature_store.png" width="1100px">
 # MAGIC </div>
+# MAGIC 
+# MAGIC See [here](https://towardsdatascience.com/do-you-really-need-a-feature-store-e59e3cc666d3) for a really good article about the feature store.
 
 # COMMAND ----------
 
