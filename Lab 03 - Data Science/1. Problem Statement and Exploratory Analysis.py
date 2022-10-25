@@ -26,6 +26,42 @@
 
 # COMMAND ----------
 
+# MAGIC %md
+# MAGIC ## Workflow Outline
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC 1. **Exploratory Data Analysis**
+# MAGIC     * all good data scientists start by graphing the data
+# MAGIC     * correlations between variables can be interesting
+# MAGIC 
+# MAGIC 2. **Feature Generation**
+# MAGIC     * New Features would be non-linear relationships between existing features.  
+# MAGIC      Usually representing expert business knowledge.
+# MAGIC     * Databricks has a convenient UI to search and share features at the workspace level.
+# MAGIC     * Features will have to be created for all "out-of-box" data.
+# MAGIC 
+# MAGIC 3. **Pipeline**
+# MAGIC     * Impute missing data
+# MAGIC     * Encode categorial data
+# MAGIC     * Rescale numerical data
+# MAGIC     * Predict target variable
+# MAGIC     * The pipeline must be prepared on the training data, then persisted.
+# MAGIC     * The pipeline will then have to be run on all "out-of-box" data
+# MAGIC    
+# MAGIC 4. **Cross Validation**
+# MAGIC     * A predictive model has to be evaluated on a (at least one) test set.
+# MAGIC     * Choice of evaluation metric is cruial and should be developed  
+# MAGIC       in a collaboration between data scientists and business/product owners.
+# MAGIC 
+# MAGIC 5. **Deployment**
+# MAGIC     * The model should be made available either internally or externally (or both)
+# MAGIC     * In many cases, REST APIs are particularly useful for deployment.  
+# MAGIC     * One must pay attention to latency of the prediction
+
+# COMMAND ----------
+
 # MAGIC %md 
 # MAGIC ## Exploratory Data Analysis
 # MAGIC 

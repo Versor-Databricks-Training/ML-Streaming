@@ -2,11 +2,34 @@
 # MAGIC %md-sandbox
 # MAGIC # Feature Engineering
 # MAGIC 
-# MAGIC <!-- https://databricks.com/wp-content/uploads/2021/07/Feature-Engineering-At-Scale-blog-img-2.png -->
-# MAGIC 
 # MAGIC We will now make use of our learnings from our exploratory analysis and build our feature engineering pipeline. 
 # MAGIC 
-# MAGIC We will address a typical data science workflow which can include addressing missing values, scaling, discretization, encoding categorical features, etc. We will also make use of specific business knowledge to create potentially predictive features.
+# MAGIC We often refer to the structured inputs as a collection of features. From these features we may apply non-linear transformations and produce new **derived** features. 
+# MAGIC 
+# MAGIC Typically, these derived features are informed by input from subject matter experts.
+# MAGIC 
+# MAGIC In principle, a sufficiently expressive machine learning model would have the ability to learn the non-linear maps, if the derived feature is indeed important. However this may require more training data than is available and so the engineering of derived features can lighten the workload of the model.  
+# MAGIC 
+# MAGIC If the features turn out to not be interesting, then the model should de-emphasize them. In this manner, feature engineering is an excellent way to test commonly held beliefs from subject experts.
+# MAGIC 
+# MAGIC Carefully curated features are valuable and must be shared amongst collegues. For this reason, Databricks has developed a specific UI for derived features.
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Derived Features
+# MAGIC 
+# MAGIC There are two methods to compute derived features:  
+# MAGIC <br> 
+# MAGIC 1. **Precompute**
+# MAGIC 
+# MAGIC When features are precomputed, they require a **feature store**, where they are stored and from where they will be retrieved at inference.  Typically these precomputed features are aggregations over multiple samples, so that the feature cannot even in principle be computed when performing inference on a single sample. 
+# MAGIC 
+# MAGIC One can also pre-compute derived features on a single sample; indeed this is similar to the familiar numerical trick of reducing compute time by approximating a function with a lookup table.  
+# MAGIC <br> 
+# MAGIC 2. **Compute at time of inference**
+# MAGIC 
+# MAGIC Features which are computed at time of inference must only depend on a single sample. Nonetheless they could still be a non-linear map and possibly be compute intensive. When computing features at the time of inference, this is typically done in a **pipeline**, which we will study in the next notebook.
 
 # COMMAND ----------
 
@@ -88,6 +111,22 @@ plt.show()
 # MAGIC <div style="text-align:bottom">
 # MAGIC   <img src="https://ajmal-field-demo.s3.ap-southeast-2.amazonaws.com/apj-sa-bootcamp/feature_store.png" width="1100px">
 # MAGIC </div>
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Features Overview
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC 
+# MAGIC A feature store functions as a lookup table requires a primary key. This must be chosen judiciously as this will be used  
+# MAGIC to join the feature store with unseen data at inference time. So the unseen data must have a primary key  
+# MAGIC which is in the training data.  
+# MAGIC 
+# MAGIC In the current example, we are bypassing this concern since train/valid/test are all known  
+# MAGIC from the outset and their features are in the feature store.
 
 # COMMAND ----------
 

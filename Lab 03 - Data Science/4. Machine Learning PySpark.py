@@ -30,12 +30,21 @@ display(data)
 
 # COMMAND ----------
 
+# MAGIC %sql
+# MAGIC 
+# MAGIC DESCRIBE HISTORY phytochemicals_quality
+
+# COMMAND ----------
+
 # MAGIC %md
 # MAGIC # Train test Split
 
 # COMMAND ----------
 
-from sklearn.model_selection import train_test_split
+# MAGIC %md
+# MAGIC Can you explain in your own words the use of training/validation/test sets?
+
+# COMMAND ----------
 
 train_portion = 0.7
 valid_portion = 0.2
@@ -46,7 +55,13 @@ train_data, test_data, valid_data = data.randomSplit([train_portion, valid_porti
 # COMMAND ----------
 
 # check the math worked
-data.count() - (train_data.count() + test_data.count() + valid_data.count())
+assert data.count() - (train_data.count() + test_data.count() + valid_data.count()) == 0
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC Have you heard of cross-validation?   
+# MAGIC Can you explain what this has to do with train/validation/test split?
 
 # COMMAND ----------
 
@@ -59,10 +74,6 @@ feature_table = f"{DATABASE_NAME}.features_oj_prediction_experiment"
 
 feature_lookup = FeatureLookup(
   table_name=feature_table,
-  #
-  #          Pull our calculated features from our feature store
-  #             |
-  #             |
   feature_names=["h_concentration", "acidity_ratio"],
   lookup_key = ["customer_id"]
 )
@@ -86,6 +97,19 @@ validation_set = fs.create_training_set(
 
 training_data = training_set.load_df()
 validation_data = validation_set.load_df()
+
+# COMMAND ----------
+
+display(fs.create_training_set(
+  df=spark.createDataFrame(df_inf),
+  feature_lookups=[feature_lookup],
+  label = 'quality',
+  exclude_columns="customer_id"
+).load_df())
+
+# COMMAND ----------
+
+
 
 # COMMAND ----------
 
