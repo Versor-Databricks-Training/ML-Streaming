@@ -37,14 +37,14 @@ import numpy as np
 
 # COMMAND ----------
 
-# DBTITLE 1,Note: our original data set does not have our calculated features
+# DBTITLE 1,Note: our original data set does not have our pre-computed derived features
 spark.sql(f"USE {DATABASE_NAME}")
 data = spark.table("phytochemicals_quality")
 display(data)
 
 # COMMAND ----------
 
-# DBTITLE 1,We need a FeatureLookup to pull our custom features from our feature store
+# DBTITLE 1,We need a FeatureLookup to pull our pre-computed features from our feature store
 from databricks.feature_store import FeatureLookup, FeatureStoreClient
 
 fs = FeatureStoreClient()
@@ -65,7 +65,7 @@ feature_lookup = FeatureLookup(
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC Recall that our precomputed features in the feature store, were computed from only the training data.
+# MAGIC Recall that our pre-computed features in the feature store, were computed from only the training data.
 
 # COMMAND ----------
 
@@ -121,24 +121,23 @@ validation_data = fs.create_training_set(
 
 # MAGIC %md
 # MAGIC ## Initial Preprocessing
-# MAGIC 
-# MAGIC This includes processing which will not need to be performed on new data.
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC This includes processing which will not need to be performed on new data but it needed for the training phase
 # MAGIC 
 # MAGIC All processing which must be performed on new data, should be in the pipeline.
 
 # COMMAND ----------
 
-training_data.withColumn('quality', F.col('quality') == "Good").select('quality').show(5)
-
-# COMMAND ----------
-
-# DBTITLE 1,Reformat target variable
+# DBTITLE 1,Reformat target variable as binary integer
 training_data = training_data.withColumn('quality', (F.col('quality') == "Good").cast('int'))
 validation_data = validation_data.withColumn('quality', (F.col('quality') == "Good").cast('int'))
 
 # COMMAND ----------
 
-# DBTITLE 1,Gather the numerical and categorical features
+# DBTITLE 1,Make list of numerical and categorical features
 # convert top of the spark df to pandas, the use native pandas fucntion to get numerical columns
 # we have to remove the label column
 numerical_features = training_data.limit(1).toPandas()._get_numeric_data().columns.tolist()
@@ -163,11 +162,6 @@ print('categorical_features:', categorical_features)
 
 # COMMAND ----------
 
-# Save into our database for future use
-# Just to be clear, these tables have the precomputed derived features and have been preprocessed.
-# We have not yet done things like imputation, scaling and runtime features. 
-# These steps will be in the pipeline which we study next. 
-
 def save_to_db(df, name, pandas=False):
   if pandas:
     df = spark.createDataFrame(df)
@@ -187,7 +181,7 @@ save_to_db(validation_data, "validation_data")
 # MAGIC %md
 # MAGIC ## Pipeline
 # MAGIC 
-# MAGIC **Linear pipeline**: takes a dataframe, applies a series of transformations then an estimation/prediction
+# MAGIC **Linear pipeline**: takes a dataframe, applies a linear series of transformations then an estimation/prediction
 # MAGIC 
 # MAGIC **Non-Linear Pipieline**: takes a dataframe, applies transformations in a Directed Acyclic Graph then an estimation/prediction
 # MAGIC 
@@ -196,8 +190,11 @@ save_to_db(validation_data, "validation_data")
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ### String Indexer 
-# MAGIC 
+# MAGIC ### String Indexer
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC The purpose of a string indexer is to convert a categorical variable to a  
 # MAGIC numerical variable.
 # MAGIC 
@@ -289,11 +286,16 @@ df.show()
 
 # DBTITLE 1,Categorical Imputer
 # I am not aware of a native categorical imputer in spark.
-# It is pretty straightforward to build a custom transformer
+# This is one way to build a custom transformer
+#
+# By extending DefaultParamsWritable, DefaultParamsReadable, we allow the pipeline to be serialized.
+# This is an example of something in the Spark stack whcih was initially only available in Scala 
+# and was later ported to PySpark.
 
 from pyspark.ml import Transformer
+from pyspark.ml.util import DefaultParamsWritable, DefaultParamsReadable
 
-class CategoricalImputer(Transformer):
+class CategoricalImputer(Transformer, DefaultParamsWritable, DefaultParamsReadable):
     def __init__(self, categorical_columns, fillValue=""):
         super(CategoricalImputer, self).__init__()
         self.categorical_columns = categorical_columns
@@ -348,7 +350,7 @@ display(pipeline.fit(df).transform(df))
 
 # COMMAND ----------
 
-class AcidityRatioTransformer(Transformer):
+class AcidityRatioTransformer(Transformer, DefaultParamsWritable, DefaultParamsReadable):
     def __init__(self, ratio_colname, acid_colname, sugar_colname):
         super(AcidityRatioTransformer, self).__init__()
         self.acid_colname = acid_colname
@@ -360,7 +362,7 @@ class AcidityRatioTransformer(Transformer):
         return df
       
       
-class HConTransformer(Transformer):
+class HConTransformer(Transformer, DefaultParamsWritable, DefaultParamsReadable):
     def __init__(self, hconc_colname, ph_colname):
         super(HConTransformer, self).__init__()
         self.hconc_colname = hconc_colname
@@ -386,14 +388,18 @@ class HConTransformer(Transformer):
 
 from pyspark.ml import Pipeline
 
+onehot_features = [c + "_oh" for c in categorical_features]
+
 categorical_imputer = CategoricalImputer(categorical_columns=categorical_features, fillValue="")
 
 string_indexer = StringIndexer(inputCols=categorical_features, outputCols=[c + "_num" for c in categorical_features])
 
-onehot_encoder = OneHotEncoder(inputCols=[c + "_num" for c in categorical_features], outputCols=[c + "_oh" for c in categorical_features])
+onehot_encoder = OneHotEncoder(inputCols=[c + "_num" for c in categorical_features], outputCols=onehot_features)
 
 # Put together in a pipeline
 categorical_pipeline = Pipeline(stages=[categorical_imputer, string_indexer, onehot_encoder])
+
+# COMMAND ----------
 
 # as a demonstration we fit and transform the pipeline but in the real thing, we must be a bit more careful
 display(categorical_pipeline.fit(validation_data).transform(validation_data))
@@ -404,8 +410,8 @@ display(categorical_pipeline.fit(validation_data).transform(validation_data))
 # MAGIC ### Numerical Pipeline
 # MAGIC 
 # MAGIC There are three transformations in our numerical pipeline
-# MAGIC 1. imputation
-# MAGIC 2. runtime derived features
+# MAGIC 1. runtime derived features
+# MAGIC 2. imputation
 # MAGIC 3. vectorization
 # MAGIC 4. scaling
 
@@ -413,17 +419,20 @@ display(categorical_pipeline.fit(validation_data).transform(validation_data))
 
 from pyspark.ml.feature import Imputer, StandardScaler, VectorAssembler
 
-# The runtime derived features
+# 1. The runtime derived features
 acidity_transformer = AcidityRatioTransformer("acidity_ratio", 'citric_acid', 'residual_sugar')
 hcon_transformer = HConTransformer('h_concentration', "pH")
 
 # We mustn't forget to include the derived numerical features in the list of features to be scaled
 derived_numerical_features = numerical_features + ['acidity_ratio', 'h_concentration']
 
+# 2. imputation
 numerical_imputer = Imputer(inputCols=derived_numerical_features, outputCols=derived_numerical_features, strategy='median')
 
+# 3. Vectorization
 numerical_vectorizer = VectorAssembler(inputCols=derived_numerical_features, outputCol='numerical_vec')
 
+# 4. Scaling
 numerical_scalar = StandardScaler(withMean=True, inputCol="numerical_vec", outputCol="numerical_scaled")
 
 # We must impute after computing the derived features
@@ -436,31 +445,120 @@ numerical_pipeline.fit(validation_data).transform(validation_data).toPandas()[:2
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ### Processing Pipeline
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC We combine the categorical and numerical pipelines
 
 # COMMAND ----------
 
 # This final assmebler combines the categorical and numerical columns into one
-final_assembler = VectorAssembler(inputCols=['type_oh', 'numerical_scaled'], outputCol="features")
+final_assembler = VectorAssembler(inputCols=onehot_features+['numerical_scaled'], outputCol="features")
 
 pipeline = Pipeline(stages = [categorical_pipeline, numerical_pipeline, final_assembler])
 
 # COMMAND ----------
 
-# DBTITLE 1,Our pipeline needs to end in an estimator, we will use a random forrest at first
+pipeline.fit(training_data).transform(validation_data).toPandas()[:2]
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Estimator
+
+# COMMAND ----------
+
+# MAGIC %run "./Utils/ml_utils"
+
+# COMMAND ----------
+
+import mlflow
+
+PROJECT_PATH = "/Users/nick.halmagyi@versor.com.au/MLFlowExperiments"
+experiment_name = "Orange-Quality-Prediction"
+experiment_path = os.path.join(PROJECT_PATH, experiment_name)
+experiment_id = '585900274276948'
+
+# experiment_id = mlflow.create_experiment(experiment_path)
+mlflow.set_experiment(experiment_path)
+
+mlflow.spark.autolog()
+
+# COMMAND ----------
+
+# DBTITLE 1,Our pipeline needs to end in an estimator, we will use a random forest
 from pyspark.ml.classification import RandomForestClassifier
 
-rf_params = {'numTrees':3, 
-             'maxDepth':2, 
+rf_params = {'numTrees':500, 
+             'maxDepth':10, 
              'featuresCol':'features',
              'labelCol': "quality", 
              'seed':42}
 
 rf = RandomForestClassifier(**rf_params)
 
+model = Pipeline(stages=[pipeline, rf])
+
 # COMMAND ----------
 
-model = Pipeline(stages = [categorical_pipeline, numerical_pipeline, rf])
+import os
+
+model = Pipeline(stages=[pipeline, rf])
+
+model_dir = f'/dbfs/FileStore/{USERNAME}/models'
+dbutils.fs.mkdirs(model_dir)
+
+model_name = 'juice_random_forest.model'
+path = os.path.join(model_dir, model_name)
+
+dbutils.fs.rm(path, recurse=True)
+model.save(path)
+
+# COMMAND ----------
+
+baseline_predictions = training_data.select('quality').withColumn('prediction', F.lit(1).cast('double'))  
+baseline_evaluations = make_binary_evaluation(baseline_predictions, labelCol='quality', predCol='prediction')
+
+# COMMAND ----------
+
+with mlflow.start_run(run_name="random_forest_pipeline",
+                      experiment_id=experiment_id) as mlflow_run:
+    
+  
+  model = Pipeline(stages=[pipeline, rf])
+  
+  model = model.fit(training_data)
+  
+  predictions = model.transform(validation_data).select('quality', 'prediction')
+  
+  metrics = make_binary_evaluation(predictions, labelCol='quality', predCol='prediction')
+  
+  mlflow.log_params(rf_params)
+  mlflow.log_metrics(metrics)
+
+# COMMAND ----------
+
+import os
+
+model_dir = f'/dbfs/FileStore/{USERNAME}/models'
+dbutils.fs.mkdirs(model_dir)
+
+model_name = 'juice_random_forest.model'
+path = os.path.join(model_dir, model_name)
+
+dbutils.fs.rm(path, recurse=True)
+model.save(path)
+
+# COMMAND ----------
+
+baseline_predictions = predictions.select('quality').withColumn('prediction', F.lit(1).cast('double'))
+make_binary_evaluation(baseline_predictions, labelCol='quality', predCol='prediction')
+
+# COMMAND ----------
+
+make_binary_evaluation(predictions, labelCol='quality', predCol='prediction')
 
 # COMMAND ----------
 
@@ -480,43 +578,6 @@ model = Pipeline(stages = [categorical_pipeline, numerical_pipeline, rf])
 # MAGIC - Click the "Create an AutoML Experiment" arrow dropdown
 # MAGIC - Press on **Create Blank Experiment**
 # MAGIC - Put the experiment name as: "**first_name last_name Orange Quality Prediction**", so e.g. "Ajmal Aziz Orange Quality Prediction"
-
-# COMMAND ----------
-
-# DBTITLE 1,We create a blank experiment to log our runs to
-experiment_id = <>
-
-# For future reference, of course, you can use the mlflow APIs to create and set the experiment
-
-# experiment_name = "Orange Quality Prediction"
-# experiment_path = os.path.join(PROJECT_PATH, experiment_name)
-# experiment_id = mlflow.create_experiment(experiment_path)
-
-# mlflow.set_experiment(experiment_path)
-
-# COMMAND ----------
-
-# DBTITLE 1,We use mlflow's sklearn flavour to log and evaluate our model as an experiment run
-import mlflow
-import pandas as pd
-
-# Enable automatic logging of input samples, metrics, parameters, and models
-mlflow.sklearn.autolog(log_input_examples=True, silent=True)
-
-with mlflow.start_run(run_name="random_forest_pipeline",
-                      experiment_id=experiment_id) as mlflow_run:
-    # Fit our estimator
-    rf_model.fit(X_training, y_training)
-    
-    # Log our parameters
-    mlflow.log_params(rf_params)
-    
-    # Training metrics are logged by MLflow autologging
-    # Log metrics for the validation set
-    mlflow.sklearn.eval_and_log_metrics(rf_model,
-                                        X_validation,
-                                        y_validation,
-                                        prefix="val_")
 
 # COMMAND ----------
 
