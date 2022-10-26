@@ -284,19 +284,26 @@ df.show()
 
 # COMMAND ----------
 
-# DBTITLE 1,Categorical Imputer
-# I am not aware of a native categorical imputer in spark.
-# This is one way to build a custom transformer
-#
-# By extending DefaultParamsWritable, DefaultParamsReadable, we allow the pipeline to be serialized.
-# This is an example of something in the Spark stack whcih was initially only available in Scala 
-# and was later ported to PySpark.
+# MAGIC %md
+# MAGIC 
+# MAGIC #### Categorical Imputer
+# MAGIC 
+# MAGIC I am not aware of a native categorical imputer in spark.
+# MAGIC This is one way to build a custom transformer
+# MAGIC 
+# MAGIC By extending DefaultParamsWritable, DefaultParamsReadable, we allow the pipeline to be serialized.
+# MAGIC This is an example of something in the Spark stack whcih was initially only available in Scala 
+# MAGIC and was later ported to PySpark.
+# MAGIC 
+# MAGIC This [stackoverflow](https://stackoverflow.com/questions/41399399/serialize-a-custom-transformer-using-python-to-be-used-within-a-pyspark-ml-pipel) topic might be of interest
+
+# COMMAND ----------
 
 from pyspark.ml import Transformer
 from pyspark.ml.util import DefaultParamsWritable, DefaultParamsReadable
 
 class CategoricalImputer(Transformer, DefaultParamsWritable, DefaultParamsReadable):
-    def __init__(self, categorical_columns, fillValue=""):
+    def __init__(self, categorical_columns=[], fillValue=""):
         super(CategoricalImputer, self).__init__()
         self.categorical_columns = categorical_columns
         self.fillValue = fillValue
@@ -310,8 +317,12 @@ display(CategoricalImputer(categorical_columns=['col'], fillValue='xxx').transfo
 
 # COMMAND ----------
 
-# DBTITLE 1,Numerical Imputer
-from pyspark.ml.feature import Imputer
+# MAGIC %md
+# MAGIC #### Numerical Imputer
+
+# COMMAND ----------
+
+from pyspark.ml.feature import 
 
 df = spark.createDataFrame([(1,),(3,),(3,),(None,)], ['col'])
 
@@ -351,7 +362,7 @@ display(pipeline.fit(df).transform(df))
 # COMMAND ----------
 
 class AcidityRatioTransformer(Transformer, DefaultParamsWritable, DefaultParamsReadable):
-    def __init__(self, ratio_colname, acid_colname, sugar_colname):
+    def __init__(self, ratio_colname='acidity_ratio', acid_colname='citric_acid', sugar_colname='residual_sugar'):
         super(AcidityRatioTransformer, self).__init__()
         self.acid_colname = acid_colname
         self.sugar_colname = sugar_colname
@@ -361,9 +372,8 @@ class AcidityRatioTransformer(Transformer, DefaultParamsWritable, DefaultParamsR
         df = df.withColumn(self.ratio_colname, F.log(F.col(self.acid_colname)/F.col(self.sugar_colname)) )
         return df
       
-      
 class HConTransformer(Transformer, DefaultParamsWritable, DefaultParamsReadable):
-    def __init__(self, hconc_colname, ph_colname):
+    def __init__(self, hconc_colname='h_concentration', ph_colname='pH'):
         super(HConTransformer, self).__init__()
         self.hconc_colname = hconc_colname
         self.ph_colname = ph_colname
@@ -457,49 +467,11 @@ numerical_pipeline.fit(validation_data).transform(validation_data).toPandas()[:2
 # This final assmebler combines the categorical and numerical columns into one
 final_assembler = VectorAssembler(inputCols=onehot_features+['numerical_scaled'], outputCol="features")
 
-pipeline = Pipeline(stages = [categorical_pipeline, numerical_pipeline, final_assembler])
+processing_pipeline = Pipeline(stages = [categorical_pipeline, numerical_pipeline, final_assembler])
 
 # COMMAND ----------
 
-pipeline.fit(training_data).transform(validation_data).toPandas()[:2]
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Estimator
-
-# COMMAND ----------
-
-# MAGIC %run "./Utils/ml_utils"
-
-# COMMAND ----------
-
-import mlflow
-
-PROJECT_PATH = "/Users/nick.halmagyi@versor.com.au/MLFlowExperiments"
-experiment_name = "Orange-Quality-Prediction"
-experiment_path = os.path.join(PROJECT_PATH, experiment_name)
-experiment_id = '585900274276948'
-
-# experiment_id = mlflow.create_experiment(experiment_path)
-mlflow.set_experiment(experiment_path)
-
-mlflow.spark.autolog()
-
-# COMMAND ----------
-
-# DBTITLE 1,Our pipeline needs to end in an estimator, we will use a random forest
-from pyspark.ml.classification import RandomForestClassifier
-
-rf_params = {'numTrees':500, 
-             'maxDepth':10, 
-             'featuresCol':'features',
-             'labelCol': "quality", 
-             'seed':42}
-
-rf = RandomForestClassifier(**rf_params)
-
-model = Pipeline(stages=[pipeline, rf])
+processing_pipeline.fit(training_data).transform(validation_data).toPandas()[:2]
 
 # COMMAND ----------
 
@@ -508,76 +480,11 @@ import os
 model = Pipeline(stages=[pipeline, rf])
 
 model_dir = f'/dbfs/FileStore/{USERNAME}/models'
-dbutils.fs.mkdirs(model_dir)
+model_name = 'juice_processing.pipeline'
 
-model_name = 'juice_random_forest.model'
 path = os.path.join(model_dir, model_name)
 
-dbutils.fs.rm(path, recurse=True)
-model.save(path)
-
-# COMMAND ----------
-
-baseline_predictions = training_data.select('quality').withColumn('prediction', F.lit(1).cast('double'))  
-baseline_evaluations = make_binary_evaluation(baseline_predictions, labelCol='quality', predCol='prediction')
-
-# COMMAND ----------
-
-with mlflow.start_run(run_name="random_forest_pipeline",
-                      experiment_id=experiment_id) as mlflow_run:
-    
-  
-  model = Pipeline(stages=[pipeline, rf])
-  
-  model = model.fit(training_data)
-  
-  predictions = model.transform(validation_data).select('quality', 'prediction')
-  
-  metrics = make_binary_evaluation(predictions, labelCol='quality', predCol='prediction')
-  
-  mlflow.log_params(rf_params)
-  mlflow.log_metrics(metrics)
-
-# COMMAND ----------
-
-import os
-
-model_dir = f'/dbfs/FileStore/{USERNAME}/models'
-dbutils.fs.mkdirs(model_dir)
-
-model_name = 'juice_random_forest.model'
-path = os.path.join(model_dir, model_name)
-
-dbutils.fs.rm(path, recurse=True)
-model.save(path)
-
-# COMMAND ----------
-
-baseline_predictions = predictions.select('quality').withColumn('prediction', F.lit(1).cast('double'))
-make_binary_evaluation(baseline_predictions, labelCol='quality', predCol='prediction')
-
-# COMMAND ----------
-
-make_binary_evaluation(predictions, labelCol='quality', predCol='prediction')
-
-# COMMAND ----------
-
-# MAGIC %md-sandbox
-# MAGIC 
-# MAGIC ## Create an Experiment Manually 👩‍🔬
-# MAGIC 
-# MAGIC <div style="float:right">
-# MAGIC   <img src="https://ajmal-field-demo.s3.ap-southeast-2.amazonaws.com/apj-sa-bootcamp/create_experiment.gif" width="800px">
-# MAGIC </div>
-# MAGIC 
-# MAGIC 
-# MAGIC We are now going to manually create an experiment using our UI. To do this, we will follow the following steps:
-# MAGIC 
-# MAGIC 0. Ensure that you are in the Machine Learning persona by checking the LHS pane and ensuring it says **Machine Learning**.
-# MAGIC - Click on the ```Experiments``` button.
-# MAGIC - Click the "Create an AutoML Experiment" arrow dropdown
-# MAGIC - Press on **Create Blank Experiment**
-# MAGIC - Put the experiment name as: "**first_name last_name Orange Quality Prediction**", so e.g. "Ajmal Aziz Orange Quality Prediction"
+processing_pipeline.save(path)
 
 # COMMAND ----------
 
