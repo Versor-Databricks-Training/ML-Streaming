@@ -129,6 +129,7 @@ display(data)
 import pyspark.sql.functions as F
 import plotly.express as px
 import plotly.io as pio
+import numpy as np
 
 # COMMAND ----------
 
@@ -253,3 +254,7 @@ sns.displot(raw_data["acidity_ratio"].to_numpy())
 plt.ylabel("Count")
 plt.xlabel("Acidity ratio (no units)")
 plt.show()
+
+# COMMAND ----------
+
+

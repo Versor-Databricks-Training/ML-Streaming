@@ -86,13 +86,13 @@ assert data.count() - (train_data.count() + test_data.count() + valid_data.count
 # We save the split data as tables, we will need them in subsequent notebooks
 
 table_name = "train_data"
-train_data.write.saveAsTable(table_name)
+train_data.write.saveAsTable(table_name, mode='overwrite')
 
 table_name = "test_data"
-test_data.write.saveAsTable(table_name)
+test_data.write.saveAsTable(table_name, mode='overwrite')
 
 table_name = "valid_data"
-valid_data.write.saveAsTable(table_name)
+valid_data.write.saveAsTable(table_name, mode='overwrite')
 
 # COMMAND ----------
 
@@ -163,8 +163,15 @@ from databricks import feature_store
 
 fs = feature_store.FeatureStoreClient()
 
+
+feature_table = f"{DATABASE_NAME}.features_oj_prediction_experiment"
+
+fs.drop_table(
+  name=feature_table
+)
+
 fs.create_table(
-  name=f"{DATABASE_NAME}.features_oj_prediction_experiment",
+  name=feature_table,
   primary_keys=["type"],
   df=derived_features,
   description="""
@@ -176,7 +183,3 @@ fs.create_table(
 displayHTML("""
   <h3>Check out the <a href="/#feature-store/{}.features_oj_prediction_experiment">feature store</a> to see where our features are stored.</h3>
 """.format(DATABASE_NAME))
-
-# COMMAND ----------
-
-

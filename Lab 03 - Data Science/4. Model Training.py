@@ -133,7 +133,20 @@ metrics
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Hyper-parameter tuning
+# MAGIC ## Hyper parameter tuning with HyperOpt (Bayesian optimization) accross multiple nodes
+
+# COMMAND ----------
+
+# MAGIC %md-sandbox
+# MAGIC 
+# MAGIC <div style="float:right"><img src="https://quentin-demo-resources.s3.eu-west-3.amazonaws.com/images/bayesian-model.png" style="height: 330px"/></div>
+# MAGIC Our model performs well but we want to run hyperparameter optimisation across our parameter search space. We will use HyperOpt to do so. For fun, we're going to try an XGBoost model here.
+# MAGIC 
+# MAGIC This model is a good start, but now we want to try multiple hyper-parameters and search the space rather than a fixed size.
+# MAGIC 
+# MAGIC GridSearch could be a good way to do it, but not very efficient when the parameter dimension increase and the model is getting slow to train due to a massive amount of data.
+# MAGIC 
+# MAGIC HyperOpt search accross your parameter space for the minimum loss of your model, using Baysian optimization instead of a random walk
 
 # COMMAND ----------
 
@@ -142,16 +155,16 @@ metrics
 
 # COMMAND ----------
 
-from hyperopt import fmin, tpe, hp, SparkTrials, Trials, STATUS_OK
+from hyperopt import fmin, tpe, hp, STATUS_OK
 from hyperopt.pyll import scope
 
 
 search_space = {
-  'maxDepth': scope.int(hp.quniform('max_depth', 10, 20, 1)),
-  'numTrees': scope.int(hp.quniform('n_estimators', 800, 900, 10))
+  'maxDepth': scope.int(hp.quniform('max_depth', 5, 6, 1)),
+  'numTrees': scope.int(hp.quniform('n_estimators', 300, 310, 10))
 }
 
-spark_trials = Trials()
+# spark_trials = Trials()
 # spark_trials = SparkTrials(parallelism=10)
 
 # COMMAND ----------
@@ -169,8 +182,9 @@ def f_train(trial_params):
     predictions = model.transform(validation_data).select('quality', 'prediction')
 
     metrics = make_binary_evaluation(predictions, labelCol='quality', predCol='prediction')
-
-    mlflow.log_params(rf_params)
+  
+    print('logging:', trial_params)
+    mlflow.log_params(trial_params)
     mlflow.log_metrics(metrics)
     
     # Set the loss to -1*auc_score so fmin maximizes the auc_score
@@ -184,8 +198,12 @@ with mlflow.start_run(run_name='rf_models', experiment_id=experiment_id) as mlfl
     fn=f_train, 
     space=search_space, 
     algo=tpe.suggest, 
-    max_evals=5
+    max_evals=2
   )
+
+# COMMAND ----------
+
+best_params
 
 # COMMAND ----------
 

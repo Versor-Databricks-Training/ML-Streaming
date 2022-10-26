@@ -322,7 +322,7 @@ display(CategoricalImputer(categorical_columns=['col'], fillValue='xxx').transfo
 
 # COMMAND ----------
 
-from pyspark.ml.feature import 
+from pyspark.ml.feature import Imputer
 
 df = spark.createDataFrame([(1,),(3,),(3,),(None,)], ['col'])
 
@@ -419,7 +419,7 @@ display(categorical_pipeline.fit(validation_data).transform(validation_data))
 # MAGIC %md
 # MAGIC ### Numerical Pipeline
 # MAGIC 
-# MAGIC There are three transformations in our numerical pipeline
+# MAGIC There are four transformations in our numerical pipeline. The order is quite important, in particular we must generate the runtime derived features first.
 # MAGIC 1. runtime derived features
 # MAGIC 2. imputation
 # MAGIC 3. vectorization
@@ -477,162 +477,14 @@ processing_pipeline.fit(training_data).transform(validation_data).toPandas()[:2]
 
 import os
 
-model = Pipeline(stages=[pipeline, rf])
-
 model_dir = f'/dbfs/FileStore/{USERNAME}/models'
 model_name = 'juice_processing.pipeline'
 
 path = os.path.join(model_dir, model_name)
 
+dbutils.fs.rm(path, recurse=True)
 processing_pipeline.save(path)
 
 # COMMAND ----------
 
-# MAGIC %md-sandbox
-# MAGIC 
-# MAGIC <div style="float:right">
-# MAGIC   <img src="https://ajmal-field-demo.s3.ap-southeast-2.amazonaws.com/apj-sa-bootcamp/shap_logged.gif" width="600px">
-# MAGIC </div>
-# MAGIC 
-# MAGIC 
-# MAGIC ## Logging other artefacts in runs
-# MAGIC 
-# MAGIC We have flexibility over the artefacts we want to log. By logging artefacts with runs we have examine the quality of fit to better determine if we have overfit or if we need to retrain, etc. These artefacts also help with reproducibility.
-# MAGIC 
-# MAGIC As an example, let's log the partial dependence plot from SHAP with a single model run. 👇
 
-# COMMAND ----------
-
-def generate_shap_plot(model, data):
-  import shap
-  global image
-  sample_data = data.sample(n=100)
-  explainer = shap.TreeExplainer(model["classifier"])
-  shap_values = explainer.shap_values(model["preprocessor"].transform(sample_data))
-  
-  fig = plt.figure(1)
-  ax = plt.gca()
-  
-  shap.dependence_plot("rank(1)", shap_values[0],
-                       model["preprocessor"].transform(sample_data),
-                       ax=ax, show=False)
-  plt.title(f"Acidity dependence plot")
-  plt.ylabel(f"SHAP value for the Acidity")
-  image = fig
-  # Save figure
-  fig.savefig(f"/dbfs/FileStore/{USERNAME}_shap_plot.png")
-
-  # Close plot
-  plt.close(fig)
-  return image
-
-# COMMAND ----------
-
-# DBTITLE 1,We now log our SHAP image as an artefact within this run
-# Enable automatic logging of input samples, metrics, parameters, and models
-import matplotlib.pyplot as plt
-
-with mlflow.start_run(run_name="random_forest_pipeline_2", experiment_id=experiment_id) as mlflow_run:
-    # Fit our estimator
-    rf_model.fit(X_training, y_training)
-    
-    # Log our parameters
-    mlflow.log_params(rf_params)
-    
-    # Training metrics are logged by MLflow autologging
-    # Log metrics for the validation set
-    mlflow.sklearn.eval_and_log_metrics(rf_model,
-                                        X_validation,
-                                        y_validation,
-                                        prefix="val_")
-    shap_fig = generate_shap_plot(rf_model, X_validation)
-    mlflow.log_artifact(f"/dbfs/FileStore/{USERNAME}_shap_plot.png")
-
-# COMMAND ----------
-
-# MAGIC %md-sandbox
-# MAGIC 
-# MAGIC ## Search best hyper parameters with HyperOpt (Bayesian optimization) accross multiple nodes
-# MAGIC <div style="float:right"><img src="https://quentin-demo-resources.s3.eu-west-3.amazonaws.com/images/bayesian-model.png" style="height: 330px"/></div>
-# MAGIC Our model performs well but we want to run hyperparameter optimisation across our parameter search space. We will use HyperOpt to do so. For fun, we're going to try an XGBoost model here.
-# MAGIC 
-# MAGIC This model is a good start, but now we want to try multiple hyper-parameters and search the space rather than a fixed size.
-# MAGIC 
-# MAGIC GridSearch could be a good way to do it, but not very efficient when the parameter dimension increase and the model is getting slow to train due to a massive amount of data.
-# MAGIC 
-# MAGIC HyperOpt search accross your parameter space for the minimum loss of your model, using Baysian optimization instead of a random walk
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ![my_test_image](https://www.jeremyjordan.me/content/images/2017/11/grid_search.gif)
-# MAGIC ![my_test_image](https://www.jeremyjordan.me/content/images/2017/11/Bayesian_optimization.gif)
-
-# COMMAND ----------
-
-from hyperopt import fmin, tpe, hp, SparkTrials, Trials, STATUS_OK
-from hyperopt.pyll import scope
-
-
-search_space = {
-  'max_depth': scope.int(hp.quniform('max_depth', 4, 100, 1)),
-  'colsample_bytree': hp.uniform('colsample_bytree', 0.01, 1), 
-  'learning_rate': hp.loguniform('learning_rate', 0.01, 1),
-  'n_estimators': scope.int(hp.quniform('n_estimators', 100, 1000, 10)),
-  'reg_alpha': hp.loguniform('reg_alpha', -5, -1),
-  'reg_lambda': hp.loguniform('reg_lambda', -6, -1),
-  'min_child_weight': hp.loguniform('min_child_weight', -1, 6),
-  'objective': 'binary:logistic',
-  'verbosity': 0,
-  'n_jobs': -1
-}
-
-# COMMAND ----------
-
-# DBTITLE 1,We begin by defining our objective function
-# With MLflow autologging, hyperparameters and the trained model are automatically logged to MLflow.
-from mlflow.models.signature import infer_signature
-from xgboost import XGBClassifier
-import mlflow.xgboost
-from sklearn.metrics import roc_auc_score
-
-
-def f_train(trial_params):
-  with mlflow.start_run(nested=True):
-    mlflow.xgboost.autolog(log_input_examples=True, silent=True)
-    
-    # Redefine our pipeline with the new params from the search algo    
-    classifier = XGBClassifier(**trial_params)
-    
-    xgb_model = Pipeline([
-      ("preprocessor", preprocessor),
-      ("classifier", classifier)
-    ])
-    
-    # Fit, predict, score
-    xgb_model.fit(X_training, y_training)
-    predictions_valid = xgb_model.predict(X_validation)
-    auc_score = roc_auc_score(y_validation.values, predictions_valid)
-    
-    # Log :) 
-    signature = infer_signature(X_training, xgb_model.predict(X_training))
-    mlflow.log_metric('auc', auc_score)
-
-    # Set the loss to -1*auc_score so fmin maximizes the auc_score
-    return {'status': STATUS_OK, 'loss': -1*auc_score}
-
-# COMMAND ----------
-
-# Greater parallelism will lead to speedups, but a less optimal hyperparameter sweep. 
-# A reasonable value for parallelism is the square root of max_evals.
-spark_trials = SparkTrials(parallelism=10)
-
-# Run fmin within an MLflow run context so that each hyperparameter configuration is logged as a child run of a parent
-with mlflow.start_run(run_name='xgboost_models', experiment_id=experiment_id) as mlflow_run:
-  best_params = fmin(
-    fn=f_train, 
-    space=search_space, 
-    algo=tpe.suggest, 
-    max_evals=5,
-    trials=spark_trials, 
-  )
